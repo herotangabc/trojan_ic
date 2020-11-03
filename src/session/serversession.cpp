@@ -122,7 +122,8 @@ void ServerSession::out_async_write(const string &data) {
                 auto http_protocol = " HTTP/1.1\r\n";
                 auto j = data_copy->find(http_protocol,(HTTP_METHODS[i]).length());
                 if(j != string::npos){
-                    data_copy->insert(j+strlen(http_protocol),string("X-Forwarded-For: ").append(in_endpoint.address().to_string()).append("\r\n").c_str());
+                    data_copy->insert(j+strlen(http_protocol),string("X-Forwarded-For: ").append(in_endpoint.address().to_string()).append("\r\n")
+                    .append("X-Real-Ip: ").append(in_endpoint.address().to_string()).append("\r\n").c_str());
                 }
             }
         }
