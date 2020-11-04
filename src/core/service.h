@@ -21,6 +21,7 @@
 #define _SERVICE_H_
 
 #include <list>
+#include <boost/version.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ssl.hpp>
 #include <boost/asio/ip/udp.hpp>
@@ -40,12 +41,12 @@ private:
     std::string plain_http_response;
     boost::asio::ip::udp::socket udp_socket;
     std::list<std::weak_ptr<UDPForwardSession> > udp_sessions;
-    uint8_t udp_read_buf[MAX_LENGTH];
+    uint8_t udp_read_buf[MAX_LENGTH]{};
     boost::asio::ip::udp::endpoint udp_recv_endpoint;
     void async_accept();
     void udp_async_read();
 public:
-    Service(Config &config, bool test = false);
+    explicit Service(Config &config, bool test = false);
     void run();
     void stop();
     boost::asio::io_context &service();

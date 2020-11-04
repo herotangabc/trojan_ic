@@ -33,7 +33,7 @@ void SSLSession::remove_session_cb(SSL_CTX*, SSL_SESSION *session) {
 
 SSL_SESSION *SSLSession::get_session() {
     if (sessions.size() == 0) {
-        return NULL;
+        return nullptr;
     }
     return sessions.front();
 }

@@ -13,7 +13,7 @@ class BasicProxy
         void async_auth(std::function<void (const system::error_code error)> resultHandler)
         {
                 const string basic_http_request_info = "CONNECT " + config.remote_addr + ":" + to_string(config.remote_port) + " HTTP/1.1\r\n" /*+ "Proxy-Connection: Keep-Alive\r\n"*/ +
-                                (config.client_proxy.basic_auth != "" ? (config.client_proxy.basic_auth + "\r\n") : "") +
+                                (!config.client_proxy.basic_auth.empty() ? (config.client_proxy.basic_auth + "\r\n") : "") +
                                 "Content-Length: 0\r\n\r\n";
                 auto data = make_shared<string>(basic_http_request_info);
                 

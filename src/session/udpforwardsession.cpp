@@ -42,9 +42,9 @@ tcp::socket& UDPForwardSession::accept_socket() {
 
 void UDPForwardSession::start() {
     timer_async_wait();
-    start_time = time(NULL);
+    start_time = time(nullptr);
     auto ssl = out_socket.native_handle();
-    if (config.ssl.sni != "") {
+    if (!config.ssl.sni.empty()) {
         SSL_set_tlsext_host_name(ssl, config.ssl.sni.c_str());
     }
     if (config.ssl.reuse_session) {
@@ -57,7 +57,7 @@ void UDPForwardSession::start() {
     Log::log_with_endpoint(in_endpoint, "forwarding UDP packets to " + config.target_addr + ':' + to_string(config.target_port) + " via " + config.remote_addr + ':' + to_string(config.remote_port), Log::INFO);
     auto self = shared_from_this();
     resolver.async_resolve(config.remote_addr, to_string(config.remote_port), [this, self](const boost::system::error_code error, tcp::resolver::results_type results) {
-        if (error) {
+        if (error || results.empty()) {
             Log::log_with_endpoint(in_endpoint, "cannot resolve remote server hostname " + config.remote_addr + ": " + error.message(), Log::ERROR);
             destroy();
             return;
@@ -216,7 +216,7 @@ void UDPForwardSession::destroy() {
         return;
     }
     status = DESTROY;
-    Log::log_with_endpoint(in_endpoint, "disconnected, " + to_string(recv_len) + " bytes received, " + to_string(sent_len) + " bytes sent, lasted for " + to_string(time(NULL) - start_time) + " seconds", Log::INFO);
+    Log::log_with_endpoint(in_endpoint, "disconnected, " + to_string(recv_len) + " bytes received, " + to_string(sent_len) + " bytes sent, lasted for " + to_string(time(nullptr) - start_time) + " seconds", Log::INFO);
     resolver.cancel();
     gc_timer.cancel();
     if (out_socket.next_layer().is_open()) {

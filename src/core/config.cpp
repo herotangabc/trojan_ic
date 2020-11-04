@@ -61,7 +61,7 @@ void Config::populate(const ptree &tree) {
     }
     if(run_type == CLIENT){
         client_proxy.host = tree.get("client_proxy.host", string());
-        if(client_proxy.host != ""){
+        if(!client_proxy.host.empty()){
             auto method_ = boost::to_upper_copy(tree.get("client_proxy.method", "BASIC"));
             if(method_ != "BASIC" && method_ != "NTLM")
             {
@@ -75,7 +75,7 @@ void Config::populate(const ptree &tree) {
 
             if (client_proxy.method == "BASIC")
             {
-                if (client_proxy.user != "" && client_proxy.password != "")
+                if (!client_proxy.user.empty() && !client_proxy.password.empty())
                 {
                     client_proxy.basic_auth = "Proxy-Authorization: Basic " + encode_base64(client_proxy.user + ":" + client_proxy.password, Base64Encoding);
                 } else {
@@ -137,7 +137,7 @@ void Config::populate(const ptree &tree) {
 
 bool Config::sip003() {
     char *JSON = getenv("SS_PLUGIN_OPTIONS");
-    if (JSON == NULL) {
+    if (JSON == nullptr) {
         return false;
     }
     populate(JSON);
@@ -149,7 +149,6 @@ bool Config::sip003() {
         case CLIENT:
         case NAT:
             throw runtime_error("SIP003 with wrong run_type");
-            break;
         case FORWARD:
             remote_addr = getenv("SS_REMOTE_HOST");
             remote_port = atoi(getenv("SS_REMOTE_PORT"));
@@ -221,10 +220,10 @@ string Config::SHA224(const string &message) {
     char mdString[(EVP_MAX_MD_SIZE << 1) + 1];
     unsigned int digest_len;
     EVP_MD_CTX *ctx;
-    if ((ctx = EVP_MD_CTX_new()) == NULL) {
+    if ((ctx = EVP_MD_CTX_new()) == nullptr) {
         throw runtime_error("could not create hash context");
     }
-    if (!EVP_DigestInit_ex(ctx, EVP_sha224(), NULL)) {
+    if (!EVP_DigestInit_ex(ctx, EVP_sha224(), nullptr)) {
         EVP_MD_CTX_free(ctx);
         throw runtime_error("could not initialize hash context");
     }

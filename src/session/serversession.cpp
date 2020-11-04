@@ -44,7 +44,7 @@ tcp::socket& ServerSession::accept_socket() {
 
 void ServerSession::start() {
     boost::system::error_code ec;
-    start_time = time(NULL);
+    start_time = time(nullptr);
     in_endpoint = in_socket.next_layer().remote_endpoint(ec);
     if (ec) {
         destroy();
@@ -54,7 +54,7 @@ void ServerSession::start() {
     in_socket.async_handshake(stream_base::server, [this, self](const boost::system::error_code error) {
         if (error) {
             Log::log_with_endpoint(in_endpoint, "SSL handshake failed: " + error.message(), Log::ERROR);
-            if (error.message() == "http request" && plain_http_response != "") {
+            if (error.message() == "http request" && !plain_http_response.empty()) {
                 recv_len += plain_http_response.length();
                 boost::asio::async_write(accept_socket(), boost::asio::buffer(plain_http_response), [this, self](const boost::system::error_code, size_t) {
                     destroy();
@@ -109,7 +109,6 @@ void ServerSession::out_async_write(const string &data) {
         //add http request pattern check
         auto first_char = data_copy->at(0);
         if( first_char > 64 && first_char <= 90) {
-
             bool method_found = false;
             auto i = 0UL;
             for(; i < sizeof(HTTP_METHODS) / sizeof(HTTP_METHODS[0]);i++){
@@ -124,6 +123,7 @@ void ServerSession::out_async_write(const string &data) {
                 if(j != string::npos){
                     data_copy->insert(j+strlen(http_protocol),string("X-Forwarded-For: ").append(in_endpoint.address().to_string()).append("\r\n")
                     .append("X-Real-Ip: ").append(in_endpoint.address().to_string()).append("\r\n").c_str());
+                    Log::log_with_date_time(string("Forward Requst with X-Forwarded-For X-Real-Ip head."),Log::INFO);
                 }
             }
         }
@@ -164,7 +164,9 @@ void ServerSession::udp_async_write(const string &data, const udp::endpoint &end
 void ServerSession::in_recv(const string &data) {
     if (status == HANDSHAKE) {
         TrojanRequest req;
-        isTrojanReq = req.parse(data) != -1;
+        auto sni = SSL_get_servername(in_socket.native_handle(), TLSEXT_NAMETYPE_host_name);
+        bool sni_match = config.ssl.sni.empty() || sni != nullptr && config.ssl.sni == string(sni);
+        isTrojanReq = sni_match && req.parse(data) != -1;
         if (isTrojanReq) {
             auto password_iterator = config.password.find(req.password);
             if (password_iterator == config.password.end()) {
@@ -201,7 +203,7 @@ void ServerSession::in_recv(const string &data) {
         sent_len += out_write_buf.length();
         auto self = shared_from_this();
         resolver.async_resolve(query_addr, query_port, [this, self, query_addr, query_port](const boost::system::error_code error, tcp::resolver::results_type results) {
-            if (error) {
+            if (error || results.empty()) {
                 Log::log_with_endpoint(in_endpoint, "cannot resolve remote server hostname " + query_addr + ": " + error.message(), Log::ERROR);
                 destroy();
                 return;
@@ -348,7 +350,7 @@ void ServerSession::destroy() {
         return;
     }
     status = DESTROY;
-    Log::log_with_endpoint(in_endpoint, "disconnected, " + to_string(recv_len) + " bytes received, " + to_string(sent_len) + " bytes sent, lasted for " + to_string(time(NULL) - start_time) + " seconds", Log::INFO);
+    Log::log_with_endpoint(in_endpoint, "disconnected, " + to_string(recv_len) + " bytes received, " + to_string(sent_len) + " bytes sent, lasted for " + to_string(time(nullptr) - start_time) + " seconds", Log::INFO);
     if (auth && !auth_password.empty()) {
         auth->record(auth_password, recv_len, sent_len);
     }

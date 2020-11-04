@@ -44,7 +44,7 @@ tcp::socket& ClientSession::accept_socket() {
 void ClientSession::init_ssl(){
 
     auto ssl = out_socket_ssl.native_handle();
-    if (config.ssl.sni != "") {
+    if (!config.ssl.sni.empty()) {
         SSL_set_tlsext_host_name(ssl, config.ssl.sni.c_str());
     }
     if (config.ssl.reuse_session) {
@@ -57,7 +57,7 @@ void ClientSession::init_ssl(){
 
 void ClientSession::start() {
     boost::system::error_code ec;
-    start_time = time(NULL);
+    start_time = time(nullptr);
     in_endpoint = in_socket.remote_endpoint(ec);
     if (ec) {
         destroy();
@@ -239,10 +239,10 @@ void ClientSession::in_sent() {
                 udp_async_read();
             }
             auto self = shared_from_this();
-            if(config.client_proxy.host != ""){
+            if(!config.client_proxy.host.empty()){
                 Log::log_with_endpoint(in_endpoint,"using client proxy " + config.client_proxy.host + ":" + to_string(config.client_proxy.port) + ",method "+ config.client_proxy.method +" for connection.",Log::INFO);
                 resolver.async_resolve(config.client_proxy.host,to_string(config.client_proxy.port),[this, self](const boost::system::error_code error, tcp::resolver::results_type results){
-                    if (error)
+                    if (error || results.empty())
                     {
                         Log::log_with_endpoint(in_endpoint, "cannot resolve client proxy hostname " + config.client_proxy.host + ": " + error.message(), Log::ERROR);
                         destroy();
@@ -314,7 +314,7 @@ void ClientSession::in_sent() {
                     {
                         using fastopen_connect = boost::asio::detail::socket_option::boolean<IPPROTO_TCP, TCP_FASTOPEN_CONNECT>;
                         boost::system::error_code ec;
-                        out_socket.next_layer().set_option(fastopen_connect(true), ec);
+                        out_socket_ssl.next_layer().set_option(fastopen_connect(true), ec);
                     }
 #endif // TCP_FASTOPEN_CONNECT
                     out_socket_ssl.next_layer().async_connect(*iterator, [this, self](const boost::system::error_code error) {
@@ -470,7 +470,7 @@ void ClientSession::destroy() {
         return;
     }
     status = DESTROY;
-    Log::log_with_endpoint(in_endpoint, "disconnected, " + to_string(recv_len) + " bytes received, " + to_string(sent_len) + " bytes sent, lasted for " + to_string(time(NULL) - start_time) + " seconds", Log::INFO);
+    Log::log_with_endpoint(in_endpoint, "disconnected, " + to_string(recv_len) + " bytes received, " + to_string(sent_len) + " bytes sent, lasted for " + to_string(time(nullptr) - start_time) + " seconds", Log::INFO);
     boost::system::error_code ec;
     resolver.cancel();
     if (in_socket.is_open()) {
