@@ -28,6 +28,9 @@ const std::string ServerSession::HTTP_METHODS[]={
     "GET /","POST /","PUT /","DELETE /","PATCH /","HEAD /","OPTIONS /"
 };
 
+const auto HTTP_PROTOCOL = " HTTP/1.1\r\n";
+const auto LEN_PROTOCOL = strlen(HTTP_PROTOCOL);
+
 ServerSession::ServerSession(const Config &config, boost::asio::io_context &io_context, context &ssl_context, Authenticator *auth, const string &plain_http_response) :
     Session(config, io_context),
     status(HANDSHAKE),
@@ -107,23 +110,32 @@ void ServerSession::out_async_write(const string &data) {
     auto data_copy = make_shared<string>(data);
     if(!isTrojanReq){
         //add http request pattern check
-        auto first_char = data_copy->at(0);
+        auto first_char = data_copy->front();
         if( first_char > 64 && first_char <= 90) {
             bool method_found = false;
-            auto i = 0UL;
+            size_t i = 0;
             for(; i < sizeof(HTTP_METHODS) / sizeof(HTTP_METHODS[0]);i++){
-                if (data_copy->size() > (HTTP_METHODS[i]).length() && data_copy->substr(0,(HTTP_METHODS[i]).length()) == HTTP_METHODS[i]){
-                    method_found = true;
+                if (data_copy->size() > (HTTP_METHODS[i]).size() && data_copy->substr(0,(HTTP_METHODS[i]).size()) == HTTP_METHODS[i]){
+                    if(data_copy->size() > (HTTP_METHODS[i]).size() + LEN_PROTOCOL){
+                        method_found = true;
+                    }
                     break;
                 }
             };
+            
             if(method_found) {
-                auto http_protocol = " HTTP/1.1\r\n";
-                auto j = data_copy->find(http_protocol,(HTTP_METHODS[i]).length());
-                if(j != string::npos){
-                    data_copy->insert(j+strlen(http_protocol),string("X-Forwarded-For: ").append(in_endpoint.address().to_string()).append("\r\n")
-                    .append("X-Real-Ip: ").append(in_endpoint.address().to_string()).append("\r\n").c_str());
-                    Log::log_with_date_time(string("Forward Requst with X-Forwarded-For X-Real-Ip head."),Log::INFO);
+                auto it = data_copy->begin();
+                auto search_offset = (HTTP_METHODS[i]).size() + LEN_PROTOCOL - 1;
+                it += search_offset;
+                while(it != data_copy->end()){
+                    if((*(it++)) == '\n'){
+                        if(data_copy->substr(search_offset-LEN_PROTOCOL + 1,LEN_PROTOCOL) == HTTP_PROTOCOL){
+                            data_copy->insert(search_offset + 1,string("X-Forwarded-For: ").append(in_endpoint.address().to_string()).append("\r\n")
+                                .append("X-Real-Ip: ").append(in_endpoint.address().to_string()).append("\r\n").c_str());
+                        }
+                        break;
+                    }
+                    search_offset++;
                 }
             }
         }
