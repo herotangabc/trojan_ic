@@ -177,7 +177,7 @@ void ServerSession::in_recv(const string &data) {
     if (status == HANDSHAKE) {
         TrojanRequest req;
         auto sni = SSL_get_servername(in_socket.native_handle(), TLSEXT_NAMETYPE_host_name);
-        bool sni_match = config.ssl.sni.empty() || sni != nullptr && config.ssl.sni == string(sni);
+        bool sni_match = config.ssl.sni.empty() || (sni != nullptr && config.ssl.sni == string(sni));
         isTrojanReq = sni_match && req.parse(data) != -1;
         if (isTrojanReq) {
             auto password_iterator = config.password.find(req.password);

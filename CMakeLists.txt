@@ -12,26 +12,10 @@ else()
     add_definitions(-Wall -Wextra)
 endif()
 
-add_executable(trojan_ic
-    src/session/proxy/basicproxy.hpp
-    src/core/authenticator.cpp
-    src/core/config.cpp
-    src/core/log.cpp
-    src/core/service.cpp
-    src/core/version.cpp
-    src/main.cpp
-    src/proto/socks5address.cpp
-    src/proto/trojanrequest.cpp
-    src/proto/udppacket.cpp
-    src/session/clientsession.cpp
-    src/session/forwardsession.cpp
-    src/session/natsession.cpp
-    src/session/serversession.cpp
-    src/session/session.cpp
-    src/session/udpforwardsession.cpp
-    src/ssl/ssldefaults.cpp
-    src/ssl/sslsession.cpp)
-include_directories(src)
+file(GLOB_RECURSE CPP_LIST src/*.cpp)
+
+add_executable(trojan_ic ${CPP_LIST})
+target_include_directories(trojan_ic PRIVATE src)
 
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
