@@ -26,6 +26,8 @@ using namespace std;
 using namespace boost::asio::ip;
 using namespace boost::asio::ssl;
 
+
+
 ClientSession::ClientSession(const Config &config, boost::asio::io_context &io_context, context &ssl_context) :
     Session(config, io_context),
     status(HANDSHAKE),
@@ -81,15 +83,15 @@ void ClientSession::in_async_read() {
     });
 }
 
-void ClientSession::in_async_write(const string &data) {
+void ClientSession::in_async_write(const string &data,function<void(void)> after_write) {
     auto self = shared_from_this();
     auto data_copy = make_shared<string>(data);
-    boost::asio::async_write(in_socket, boost::asio::buffer(*data_copy), [this, self, data_copy](const boost::system::error_code error, size_t) {
+    boost::asio::async_write(in_socket, boost::asio::buffer(*data_copy), [this, self, data_copy,after_write](const boost::system::error_code error, size_t) {
         if (error) {
             destroy();
             return;
         }
-        in_sent();
+        after_write();
     });
 }
 
@@ -142,36 +144,177 @@ void ClientSession::udp_async_write(const string &data, const udp::endpoint &end
     });
 }
 
+inline void split(string str,string sep,function<bool(string)> fn){
+    char* cstr = const_cast<char*>(str.c_str());
+    char* current;
+    current=strtok(cstr,sep.c_str());
+    while(current!=nullptr){
+        if(!fn(current)){
+            break;
+        }
+        current=strtok(nullptr,sep.c_str());
+    }
+}
+
+void ClientSession::precheck_iphost(string& hostStr,int32_t& port){
+        //lazy check if host is ipv4 or domain
+    bool isIPV4 = true;
+    int8_t segIndex = 0;
+    char segValue[] = {0,0,0,0};
+    for(string::iterator it=hostStr.begin();it!=hostStr.end();++it){
+        if(segIndex > 3){
+            isIPV4 = false;
+            break;
+        }
+        if(*it == '.'){
+            segIndex++;
+        } else if (isdigit(*it)){
+            segValue[segIndex] = segValue[segIndex] * 10 + (((int)*it) - '0');
+            if(segValue[segIndex] <= 0){
+                isIPV4 = false;
+                break;
+            }
+        } else {
+            isIPV4 = false;
+            break;
+        }
+    }
+    if(segIndex != 3){
+            isIPV4 = false;
+    }
+    out_write_buf = config.password.cbegin()->first + "\r\n\x01" + (isIPV4?'\x01':'\x03') ;
+    if(isIPV4){
+        out_write_buf.append({segValue[0],segValue[1],segValue[2],segValue[3]});
+    } else {
+        out_write_buf.append({(char) hostStr.length()}).append(hostStr);
+    }
+    out_write_buf.append({(char)((port&0xff00) >> 8),(char)(port&0x00ff),'\r','\n'});
+    status= REQUEST;
+    is_udp = false;
+    Log::log_with_endpoint(in_endpoint, "request connect to " + hostStr + ":" + to_string(port) , Log::INFO);
+}
+
+
 void ClientSession::in_recv(const string &data) {
     switch (status) {
         case HANDSHAKE: {
-            if (data.length() < 2 || data[0] != 5 || data.length() != (unsigned int)(unsigned char)data[1] + 2) {
+            if (data.length() >= 2 && data[0] == 5 && data.length() == (unsigned int)(unsigned char)data[1] + 2) {
+                //socks version 5
+                bool has_method = false;
+                for (int i = 2; i < data[1] + 2; ++i) {
+                    if (data[i] == 0) {
+                        has_method = true;
+                        break;
+                    }
+                }
+                // https://tools.ietf.org/html/rfc1928
+                //   o  X'00' NO AUTHENTICATION REQUIRED
+                //   o  X'01' GSSAPI
+                //   o  X'02' USERNAME/PASSWORD
+                //   o  X'03' to X'7F' IANA ASSIGNED
+                //   o  X'80' to X'FE' RESERVED FOR PRIVATE METHODS
+                //   o  X'FF' NO ACCEPTABLE METHODS
+                if (!has_method) {
+                    Log::log_with_endpoint(in_endpoint, "unsupported auth method", Log::ERROR);
+                    in_async_write(string("\x05\xff", 2), [this](){
+                        in_sent();
+                    });
+                    status = INVALID;
+                    return;
+                }
+                proxyType = SOCKS5;
+                in_async_write(string("\x05\x00", 2), [this](){
+                        in_sent();
+                });
+                break;
+            } else if(data.length() > 25){
+                // http proxy
+                size_t lfIndex = data.find(' ');
+                if(lfIndex != string::npos && lfIndex < 8){
+                    string method = data.substr(0,lfIndex);
+                    int32_t port;
+                    string hostStr;
+                    if(method == "CONNECT"){
+                        size_t cmIndex,secondLfIndex;
+                        if((cmIndex = data.find(':'))!= string::npos && (secondLfIndex=data.find(' ',cmIndex))!= string::npos){
+                            hostStr = data.substr(lfIndex+1,cmIndex - lfIndex -1);
+                            auto portStr = data.substr(cmIndex + 1, secondLfIndex - cmIndex - 1);
+                            
+                            try{
+                                port = stoi(portStr);
+                            }catch(invalid_argument e){
+                                Log::log_with_endpoint(in_endpoint, "unknown protocol", Log::ERROR);
+                                destroy();
+                                return;
+                            }
+                            proxyType = HTTPS;
+                            precheck_iphost(hostStr,port);
+                            in_sent();
+                        }
+                    } else if(method == "GET" ||
+                     method == "POST" ||
+                     method == "PUT"||
+                     method == "DELETE" ||
+                     method == "PATCH" ||
+                     method == "HEAD" ||
+                     method == "OPTIONS") {
+                        split(data,"\r\n",[this,data,&port,&hostStr](string line){
+                            int32_t firstcommaIndex;
+                            if((firstcommaIndex=line.find("Host: ")) == 0){
+                                int32_t lastcommaIndex;
+                                if((lastcommaIndex=line.rfind(":")) > 4){
+                                    auto portStr = line.substr(lastcommaIndex+1);
+                                    bool isValidPort = true;
+                                    if(portStr.length() < 6){
+                                        for(string::iterator it=portStr.begin();it!=portStr.end();++it){
+                                            if(!isdigit(*it)){
+                                                isValidPort = false;
+                                                break;
+                                            }
+                                        }
+                                    } else {
+                                        isValidPort = false;
+                                    }
+                                    
+                                    if(isValidPort){
+                                        port = stoi(portStr);
+                                        hostStr = line.substr(6,lastcommaIndex-6);
+                                        proxyType = HTTP;
+                                        precheck_iphost(hostStr,port);
+                                    } else {
+                                        string badReq = "HTTP/1.1 400 Bad Request\r\n\r\n";
+                                        in_async_write(badReq, [this](){
+                                                destroy();
+                                        });
+                                    }
+                                } else {
+                                    port = 80;
+                                    hostStr = line.substr(6);
+                                    proxyType = HTTP;
+                                    precheck_iphost(hostStr,port);
+                                }
+                                return false;
+                            }
+                            return true;
+                        });
+                        if(proxyType == HTTP){
+                            auto slashIndex = data.substr(method.length() + 8).find("/");
+                            out_write_buf += method + " " +data.substr(slashIndex+method.length() + 8);
+                            in_sent();
+                        }
+                     }
+                } else {
+                    Log::log_with_endpoint(in_endpoint, "unknown protocol", Log::ERROR);
+                    destroy();
+                    return;
+                }
+                break;
+            } else {
                 Log::log_with_endpoint(in_endpoint, "unknown protocol", Log::ERROR);
                 destroy();
                 return;
             }
-            bool has_method = false;
-            for (int i = 2; i < data[1] + 2; ++i) {
-                if (data[i] == 0) {
-                    has_method = true;
-                    break;
-                }
-            }
-        // https://tools.ietf.org/html/rfc1928
-        //   o  X'00' NO AUTHENTICATION REQUIRED
-        //   o  X'01' GSSAPI
-        //   o  X'02' USERNAME/PASSWORD
-        //   o  X'03' to X'7F' IANA ASSIGNED
-        //   o  X'80' to X'FE' RESERVED FOR PRIVATE METHODS
-        //   o  X'FF' NO ACCEPTABLE METHODS
-            if (!has_method) {
-                Log::log_with_endpoint(in_endpoint, "unsupported auth method", Log::ERROR);
-                in_async_write(string("\x05\xff", 2));
-                status = INVALID;
-                return;
-            }
-            in_async_write(string("\x05\x00", 2));
-            break;
+            
         }
         case REQUEST: {
             if (data.length() < 7 || data[0] != 5 || data[2] != 0) {
@@ -183,7 +326,9 @@ void ClientSession::in_recv(const string &data) {
             TrojanRequest req;
             if (req.parse(out_write_buf) == -1) {
                 Log::log_with_endpoint(in_endpoint, "unsupported command", Log::ERROR);
-                in_async_write(string("\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00", 10));
+                in_async_write(string("\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00", 10), [this](){
+                        in_sent();
+                });
                 status = INVALID;
                 return;
             }
@@ -198,10 +343,14 @@ void ClientSession::in_recv(const string &data) {
                 }
                 udp_socket.bind(bindpoint);
                 Log::log_with_endpoint(in_endpoint, "requested UDP associate to " + req.address.address + ':' + to_string(req.address.port) + ", open UDP socket " + udp_socket.local_endpoint().address().to_string() + ':' + to_string(udp_socket.local_endpoint().port()) + " for relay", Log::INFO);
-                in_async_write(string("\x05\x00\x00", 3) + SOCKS5Address::generate(udp_socket.local_endpoint()));
+                in_async_write(string("\x05\x00\x00", 3) + SOCKS5Address::generate(udp_socket.local_endpoint()), [this](){
+                    in_sent();
+                });
             } else {
                 Log::log_with_endpoint(in_endpoint, "requested connection to " + req.address.address + ':' + to_string(req.address.port), Log::INFO);
-                in_async_write(string("\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00", 10));
+                in_async_write(string("\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00", 10), [this](){
+                    in_sent();
+                });
             }
             break;
         }
@@ -209,6 +358,9 @@ void ClientSession::in_recv(const string &data) {
             sent_len += data.length();
             first_packet_recv = true;
             out_write_buf += data;
+            if(proxyType == HTTPS){
+                after_ssl_handshake();
+            }
             break;
         }
         case FORWARD: {
@@ -233,11 +385,14 @@ void ClientSession::in_sent() {
             break;
         }
         case REQUEST: {
-            status = CONNECT;
-            in_async_read();
-            if (is_udp) {
-                udp_async_read();
+            if(proxyType == SOCKS5){
+                status = CONNECT;
+                in_async_read();
+                if (is_udp) {
+                    udp_async_read();
+                }
             }
+
             auto self = shared_from_this();
             if(!config.client_proxy.host.empty()){
                 Log::log_with_endpoint(in_endpoint,"using client proxy " + config.client_proxy.host + ":" + to_string(config.client_proxy.port) + ",method "+ config.client_proxy.method +" for connection.",Log::INFO);
@@ -268,14 +423,26 @@ void ClientSession::in_sent() {
                         }
                         if(config.client_proxy.method == "BASIC"){
                             auto self = shared_from_this();
-                            make_shared<BasicProxy>(std::move(in_socket),std::move(out_socket_ssl.next_layer()),config)->async_finished([self,this](asio::ip::tcp::socket ins_,asio::ip::tcp::socket outs_,const boost::system::error_code error){
+                            make_shared<BasicProxy>(std::move(in_socket),std::move(out_socket_ssl.next_layer()),config)->async_finished([self,this](asio::ip::tcp::socket ins_,asio::ip::tcp::socket outs_,const int32_t error){
                             in_socket = std::move(ins_);
                             out_socket_ssl.next_layer()=std::move(outs_);
-                            if(error){
-                                destroy();
+                            if(error != 0){
+                                if(proxyType != SOCKS5){
+                                    if(error < 0) {
+                                        in_async_write(string("HTTP/1.1 502 Bad Gateway\r\n\r\n", 28), [this](){
+                                            destroy();
+                                        });
+                                    } else {
+                                        string bad_response = "HTTP/1.1 " + to_string(error) + " Error Request\r\n\r\n";
+                                        in_async_write(string(bad_response, bad_response.length()), [this](){
+                                            destroy();
+                                        });
+                                    }
+                                }
                                 return;
+                            } else {
+                                ssl_handshake();
                             }
-                            ssl_handshake();
                         });
                         } else {
                             Log::log_with_endpoint(in_endpoint, "client proxy auth method not supported:" + config.client_proxy.method, Log::ERROR);
@@ -320,8 +487,15 @@ void ClientSession::in_sent() {
                     out_socket_ssl.next_layer().async_connect(*iterator, [this, self](const boost::system::error_code error) {
                         if (error)
                         {
+                            if(proxyType != SOCKS5){
+                                in_async_write(string("HTTP/1.1 502 Bad Gateway\r\n\r\n", 28), [this](){
+                                    destroy();
+                                });
+
+                            } else {
+                                destroy();
+                            }
                             Log::log_with_endpoint(in_endpoint, "cannot establish connection to remote server " + config.remote_addr + ':' + to_string(config.remote_port) + ": " + error.message(), Log::ERROR);
-                            destroy();
                             return;
                         }
                         ssl_handshake();
@@ -343,6 +517,41 @@ void ClientSession::in_sent() {
     }
 };
 
+inline  void ClientSession::after_ssl_handshake(){
+        if (config.ssl.reuse_session)
+            {
+                auto ssl = out_socket_ssl.native_handle();
+                if (!SSL_session_reused(ssl))
+                {
+                    Log::log_with_endpoint(in_endpoint, "SSL session not reused");
+                }
+                else
+                {
+                    Log::log_with_endpoint(in_endpoint, "SSL session reused");
+                }
+            }
+            boost::system::error_code ec;
+            if (is_udp)
+            {
+                if (!first_packet_recv)
+                {
+                    udp_socket.cancel(ec);
+                }
+                status = UDP_FORWARD;
+            }
+            else
+            {
+                if (!first_packet_recv)
+                {
+                    in_socket.cancel(ec);
+                }
+                status = FORWARD;
+            }
+
+            out_async_read();
+            out_async_write(out_write_buf);
+};
+
 
 void ClientSession::ssl_handshake(){
     auto self = shared_from_this();
@@ -354,44 +563,23 @@ void ClientSession::ssl_handshake(){
             return;
         }
         Log::log_with_endpoint(in_endpoint, "tunnel established");
-        if (config.ssl.reuse_session)
-        {
-            auto ssl = out_socket_ssl.native_handle();
-            if (!SSL_session_reused(ssl))
-            {
-                Log::log_with_endpoint(in_endpoint, "SSL session not reused");
-            }
-            else
-            {
-                Log::log_with_endpoint(in_endpoint, "SSL session reused");
-            }
+        if(proxyType == HTTPS){
+            in_async_write(string("HTTP/1.1 200 Connection established\r\n\r\n", 39), [this](){
+                status = CONNECT;
+                in_async_read();
+            });
+        }else {
+            after_ssl_handshake();
         }
-        boost::system::error_code ec;
-        if (is_udp)
-        {
-            if (!first_packet_recv)
-            {
-                udp_socket.cancel(ec);
-            }
-            status = UDP_FORWARD;
-        }
-        else
-        {
-            if (!first_packet_recv)
-            {
-                in_socket.cancel(ec);
-            }
-            status = FORWARD;
-        }
-        out_async_read();
-        out_async_write(out_write_buf);
     });
 }
 
 void ClientSession::out_recv(const string &data) {
     if (status == FORWARD) {
         recv_len += data.length();
-        in_async_write(data);
+        in_async_write(data, [this](){
+            in_sent();
+        });
     } else if (status == UDP_FORWARD) {
         udp_data_buf += data;
         udp_sent();

@@ -26,6 +26,7 @@
 #include "proxy/proxyauth.hpp"
 #include "proxy/basicproxy.hpp"
 
+
 class ClientSession : public Session {
 private:
 
@@ -38,20 +39,30 @@ private:
         INVALID,
         DESTROY
     } status;
+    enum ProxyType {
+        SOCKS5,
+        HTTPS,
+        HTTP
+    };
+    
+    uint16_t proxyType;
+    // uint16_t is_direct;
     bool is_udp;
     bool first_packet_recv;
     // std::shared_ptr<ProxyDelegate> proxyDelegate;
     boost::asio::ip::tcp::socket in_socket;
     boost::asio::ssl::stream<boost::asio::ip::tcp::socket> out_socket_ssl;
+    inline  void after_ssl_handshake();
     void init_ssl();
     void destroy();
     void in_async_read();
-    void in_async_write(const std::string &data);
-    void in_recv(const std::string &data);
+    void in_async_write(const std::string &data,function<void(void)> after_write);
+    void in_recv(const string &data);
     void in_sent();
     void proxyConnection_confirm(std::shared_ptr<std::array<uint8_t,128>> buffer,size_t offset);
     void out_async_read();
     void out_async_write(const std::string &data);
+    void precheck_iphost(string& hostStr,int32_t& port);
     void ssl_handshake();
     void out_recv(const std::string &data);
     void out_sent();

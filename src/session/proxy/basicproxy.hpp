@@ -10,7 +10,7 @@ class BasicProxy
         ProxyDelegate(std::move(in_socket),std::move(out_socket),config)
         {};
 
-        void async_auth(std::function<void (const system::error_code error)> resultHandler)
+        void async_auth(std::function<void (const int32_t error)> resultHandler)
         {
                 const string basic_http_request_info = "CONNECT " + config.remote_addr + ":" + to_string(config.remote_port) + " HTTP/1.1\r\n" /*+ "Proxy-Connection: Keep-Alive\r\n"*/ +
                                 (!config.client_proxy.basic_auth.empty() ? (config.client_proxy.basic_auth + "\r\n") : "") +
@@ -21,7 +21,7 @@ class BasicProxy
                 asio::async_write(out_socket,asio::buffer(*data),[self,this,resultHandler](const system::error_code error, size_t) {
                         if (error) {
                                 Log::log_with_endpoint(in_socket.remote_endpoint(),"send proxy connection request info failed:" + error.message(),Log::ERROR);
-                                resultHandler(error);
+                                resultHandler(-1);
                                 return;
                         }
                         auto buf = make_shared<asio::streambuf>();
@@ -30,7 +30,7 @@ class BasicProxy
                         std::size_t ){
                                 if(ec){
                                         Log::log_with_endpoint(in_socket.remote_endpoint(),"read proxy connection response info failed:" + ec.message(),Log::ERROR);
-                                        resultHandler(ec);
+                                        resultHandler(-100);
                                         return;
                                 }
                                 std::istream is_res(buf.get());
@@ -42,16 +42,18 @@ class BasicProxy
                                 is_res >> status_message;
                                 if(status_code == 200){
                                         system::error_code no_error_code;
-                                        resultHandler(no_error_code);
+                                        resultHandler(0);
                                 } else {
-                                        auto transferred_code=status_code > 200? to_string(status_code):"502";
-                                        auto data_copy = make_shared<string>(http_version + " " +  transferred_code + " " + status_message + "\r\nConnection: Close\r\n");
-                                        auto self = shared_from_this();
-                                        asio::async_write(in_socket, asio::buffer(*data_copy), [self,this,resultHandler,transferred_code](const system::error_code , size_t) {
+                                        auto transferred_code=status_code > 200? status_code:502;
+                                        Log::log_with_endpoint(in_socket.remote_endpoint(),"proxy response failed:" + transferred_code,Log::ERROR);
+                                        resultHandler(transferred_code);
+                                        // auto data_copy = make_shared<string>(http_version + " " +  transferred_code + " " + status_message + "\r\nConnection: Close\r\n");
+                                        // auto self = shared_from_this();
+                                        // asio::async_write(in_socket, asio::buffer(*data_copy), [self,this,resultHandler,transferred_code](const system::error_code , size_t) {
 
-                                                Log::log_with_endpoint(in_socket.remote_endpoint(),"proxy response failed:" + transferred_code,Log::ERROR);
-                                                resultHandler(asio::error::connection_refused);
-                                        });
+                                        //         Log::log_with_endpoint(in_socket.remote_endpoint(),"proxy response failed:" + transferred_code,Log::ERROR);
+                                        //         resultHandler(asio::error::connection_refused);
+                                        // });
                                 }
                         });
                 });
